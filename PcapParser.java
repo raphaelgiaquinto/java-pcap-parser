@@ -12,7 +12,7 @@ enum PcapFileFormat {
 void main(String[] args) {
 
     if (args.length != 1) {
-        IO.println("Usage: java PcapParser <pcap file>");
+        IO.println("Usage: java PcapParser <.pcap file>");
         System.exit(1);
     }
 
@@ -32,7 +32,7 @@ void main(String[] args) {
         PcapFileFormat pcapFileFormat = getPcapFileFormat(magicNumberBuffer);
         if (pcapFileFormat == null) {
             IO.println("Error: PCAP file is not in a supported format");
-            return;
+            System.exit(1);
         }
         IO.println("Pcap file format: " + pcapFileFormat);
         //the versions are on the next 4 bytes after the magic number
@@ -69,7 +69,6 @@ PcapFileFormat getPcapFileFormat(ByteBuffer magicNumberBuffer) {
         } else if (magicNumber == 0xA1B23C4D) {
             return PcapFileFormat.LITTLE_ENDIAN_NANO_SECONDS;
         } else {
-            IO.println("Error: PCAP file is not in a supported format (Magic: " + Integer.toHexString(magicNumber) + ")");
             return null;
         }
     }
