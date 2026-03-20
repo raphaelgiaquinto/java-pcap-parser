@@ -20,6 +20,12 @@ record PcapVersion(int majorVersion, int minorVersion) {}
 
 record LinkTypeAndAdditionalInfo(int fcsLen, int r, int p, int reserved3, int linkType) {}
 
+class PcapParserException extends RuntimeException {
+    public PcapParserException(String message) {
+        super("oups ! a PcapParserException occurred: " + message);
+    }
+}
+
 void main(String[] args) {
 
     if (args.length != 1) {
@@ -36,6 +42,10 @@ void main(String[] args) {
 
     try (var pcapStream = new FileInputStream(pcapFile)) {
         var bytes = ByteBuffer.wrap(pcapStream.readAllBytes());
+        if (bytes.remaining() < 24) {
+            IO.println("Error: PCAP file is too small, a header must be present and weigh at least 24 bytes");
+            System.exit(1);
+        }
         //the magic number is on the first 4 bytes of the header (header is 24 bytes)
         var magicNumberBuffer = bytes.slice(0, 4);
         var pcapFileFormat = getPcapFileFormat(magicNumberBuffer);
@@ -103,7 +113,7 @@ PcapFileFormat getPcapFileFormat(ByteBuffer magicNumberBuffer) {
 
 PcapVersion getPcapVersions(PcapFileFormat pcapFileFormat, ByteBuffer versionsBuffer) {
     if (versionsBuffer.remaining() != 4) {
-        throw new RuntimeException("Versions buffer must contain 4 bytes");
+        throw new PcapParserException("Versions buffer must contain 4 bytes");
     }
     switch (pcapFileFormat) {
         case BIG_ENDIAN_MICRO_SECONDS, BIG_ENDIAN_NANO_SECONDS:
@@ -127,7 +137,7 @@ PcapVersion getPcapVersions(PcapFileFormat pcapFileFormat, ByteBuffer versionsBu
  */
 int getSnapLen(PcapFileFormat pcapFileFormat, ByteBuffer snapLenBuffer) {
     if (snapLenBuffer.remaining() != 4) {
-        throw new RuntimeException("Snap len buffer must contain 4 bytes");
+        throw new PcapParserException("Snap len buffer must contain 4 bytes");
     }
     switch (pcapFileFormat) {
         case BIG_ENDIAN_MICRO_SECONDS, BIG_ENDIAN_NANO_SECONDS:
@@ -149,7 +159,7 @@ int getSnapLen(PcapFileFormat pcapFileFormat, ByteBuffer snapLenBuffer) {
  */
 LinkTypeAndAdditionalInfo getLinkTypeAndAdditionalInformation(PcapFileFormat pcapFileFormat, ByteBuffer linkTypeAdditionalInfoBuffer) {
     if (linkTypeAdditionalInfoBuffer.remaining() != 4) {
-        throw new RuntimeException("Link type buffer must contain 4 bytes");
+        throw new PcapParserException("Link type buffer must contain 4 bytes");
     }
     switch (pcapFileFormat) {
         case BIG_ENDIAN_MICRO_SECONDS, BIG_ENDIAN_NANO_SECONDS:
