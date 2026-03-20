@@ -35,11 +35,9 @@ void main(String[] args) {
     }
 
     try (FileInputStream pcapStream = new FileInputStream(pcapFile)) {
-        byte[] bytes = pcapStream.readAllBytes();
-        //extract pcap header on 24 bytes
-        byte[] pcapHeader = Arrays.copyOfRange(bytes, 0, 24);
-        //the magic number is on the first 4 bytes of the header
-        ByteBuffer magicNumberBuffer = ByteBuffer.wrap(pcapHeader, 0, 4);
+        ByteBuffer bytes = ByteBuffer.wrap(pcapStream.readAllBytes());
+        //the magic number is on the first 4 bytes of the header (header is 24 bytes)
+        ByteBuffer magicNumberBuffer = bytes.slice(0, 4);
         PcapFileFormat pcapFileFormat = getPcapFileFormat(magicNumberBuffer);
         if (pcapFileFormat == null) {
             IO.println("Error: PCAP file is not in a supported format");
@@ -47,17 +45,20 @@ void main(String[] args) {
         }
         IO.println("Pcap file format: " + pcapFileFormat);
         //the versions are on the next 4 bytes after the magic number
-        ByteBuffer versionsBuffer = ByteBuffer.wrap(pcapHeader, 4, 4);
+        ByteBuffer versionsBuffer = bytes.slice(4, 4);
         PcapVersion pcapVersions = getPcapVersions(pcapFileFormat, versionsBuffer);
         IO.println("Pcap versions: " + pcapVersions);
         //the snap length is on the next 4 bytes after reserved1 and reserved2 sections (4 bytes each)
-        ByteBuffer snapLenBuffer = ByteBuffer.wrap(pcapHeader, 16, 4);
+        ByteBuffer snapLenBuffer = bytes.slice(16, 4);
         int snapLen = getSnapLen(pcapFileFormat, snapLenBuffer);
         IO.println("Snap length: " + snapLen + " (max captured packet size in bytes)");
         //the linktype is on the next 4 bytes after the snap length section
-        ByteBuffer linkTypeBuffer = ByteBuffer.wrap(pcapHeader, 20, 4);
+        ByteBuffer linkTypeBuffer = bytes.slice(20, 4);
         LinkTypeAndAdditionalInfo linkTypeAndAdditionalInfo = getLinkTypeAndAdditionalInformation(pcapFileFormat, linkTypeBuffer);
         IO.println("Link and additional information: " + linkTypeAndAdditionalInfo);
+        //all of the next bytes are the packet data
+        ByteBuffer packetDataBuffer = bytes.slice( 24, bytes.remaining() - 24);
+        IO.println("Packet data:" + packetDataBuffer.remaining());
     } catch (IOException e) {
         IO.println("Error reading PCAP file: " + e.getMessage());
         System.exit(1);
