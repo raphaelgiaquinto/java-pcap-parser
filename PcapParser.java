@@ -9,6 +9,8 @@ import java.io.*;
 import java.util.*;
 import java.nio.*;
 
+int a = 1000;
+
 enum PcapFileFormat {
     BIG_ENDIAN_MICRO_SECONDS,
     LITTLE_ENDIAN_MICRO_SECONDS,
@@ -69,12 +71,48 @@ void main(String[] args) {
         //all of the next bytes are the packet data
         var packetDataBuffer = bytes.slice( 24, bytes.remaining() - 24);
         IO.println("Packet data:" + packetDataBuffer.remaining());
+        readPackets(pcapFileFormat, packetDataBuffer);
     } catch (IOException e) {
         IO.println("Error reading PCAP file: " + e.getMessage());
         System.exit(1);
     }
 }
 
+void readPacket(int count, int timestampSeconds, int timestampMicroSeconds, int capturedLength, int packetLength, ByteBuffer packetData) {
+    var template = """
+        Packet [%d]
+        Timestamp seconds: %d
+        Timestamp microseconds: %d
+        Captured length: %d
+        Packet length: %d
+        Packet data: %s
+    """;
+    IO.println(String.format(template, count, timestampSeconds, timestampMicroSeconds, capturedLength, packetLength, "data"));
+}
+
+void readPackets(PcapFileFormat pcapFileFormat, ByteBuffer packetDataBuffer) {
+    switch (pcapFileFormat) {
+        case BIG_ENDIAN_MICRO_SECONDS, BIG_ENDIAN_NANO_SECONDS:
+            packetDataBuffer.order(ByteOrder.BIG_ENDIAN);
+            break;
+        case LITTLE_ENDIAN_MICRO_SECONDS, LITTLE_ENDIAN_NANO_SECONDS:
+            packetDataBuffer.order(ByteOrder.LITTLE_ENDIAN);
+            break;
+    }
+    var packetCount = 0;
+    while (packetDataBuffer.remaining() >= 16) {
+        var timestampSeconds = packetDataBuffer.getInt();
+        var timestampMicroSeconds = packetDataBuffer.getInt();
+        var capturedLength = packetDataBuffer.getInt();
+        var packetLength = packetDataBuffer.getInt();
+        var packetData = packetDataBuffer.slice(packetDataBuffer.position(), capturedLength);
+        packetData.order(packetDataBuffer.order());
+        packetDataBuffer.position(packetDataBuffer.position() + capturedLength);
+        readPacket(packetCount, timestampSeconds, timestampMicroSeconds, capturedLength, packetLength, packetData);
+        packetCount ++;
+    }
+    IO.println("Number of packets read: " + packetCount);
+}
 /**
  * Extracts the pcap file format from the magic number
  * @param magicNumberBuffer byte buffer containing the magic number on 4 bytes
