@@ -6,16 +6,21 @@
  */
 
 import java.io.*;
-import java.util.*;
 import java.nio.*;
-
-int a = 1000;
 
 enum PcapFileFormat {
     BIG_ENDIAN_MICRO_SECONDS,
     LITTLE_ENDIAN_MICRO_SECONDS,
     BIG_ENDIAN_NANO_SECONDS,
     LITTLE_ENDIAN_NANO_SECONDS
+}
+
+enum PcapEthernetType {
+    ARP, IPV4, IPV6,
+}
+
+enum PcapIPV4Protocol {
+    TCP, UDP, ICMP,
 }
 
 record PcapVersion(int majorVersion, int minorVersion) {}
@@ -68,8 +73,12 @@ void main(String[] args) {
         var linkTypeBuffer = bytes.slice(20, 4);
         var linkTypeAndAdditionalInfo = getLinkTypeAndAdditionalInformation(pcapFileFormat, linkTypeBuffer);
         IO.println("Link and additional information: " + linkTypeAndAdditionalInfo);
+        if (linkTypeAndAdditionalInfo.linkType != 1) {
+            IO.println("Error: link type must be 1 (Ethernet)");
+            System.exit(1);
+        }
         //all of the next bytes are the packet data
-        var packetDataBuffer = bytes.slice( 24, bytes.remaining() - 24);
+        var packetDataBuffer = bytes.slice(24, bytes.remaining() - 24);
         IO.println("Packet data:" + packetDataBuffer.remaining());
         readPackets(pcapFileFormat, packetDataBuffer);
     } catch (IOException e) {
@@ -80,14 +89,137 @@ void main(String[] args) {
 
 void readPacket(int count, int timestampSeconds, int timestampMicroSeconds, int capturedLength, int packetLength, ByteBuffer packetData) {
     var template = """
-        Packet [%d]
+    Packet [%d]
+    ________________________________________________________
         Timestamp seconds: %d
         Timestamp microseconds: %d
         Captured length: %d
         Packet length: %d
-        Packet data: %s
+        Ethernet: [ dest MAC: %s | src MAC: %s | type: %s ]
     """;
-    IO.println(String.format(template, count, timestampSeconds, timestampMicroSeconds, capturedLength, packetLength, "data"));
+    var destMAC = new byte[6];
+    var srcMAC = new byte[6];
+    packetData.get(destMAC);
+    packetData.get(srcMAC);
+    packetData.order(ByteOrder.BIG_ENDIAN);
+    var ethernetType = getPcapEthernetType(packetData.getShort() & 0xFFFF);
+    IO.println(
+            String.format(
+                    template,
+                    count,
+                    timestampSeconds,
+                    timestampMicroSeconds,
+                    capturedLength,
+                    packetLength,
+                    formatMacAddress(destMAC),
+                    formatMacAddress(srcMAC),
+                    ethernetType
+            )
+    );
+    switch (ethernetType) {
+        case IPV4 -> parsePacketIPV4(packetData);
+        case ARP -> parsePacketARP(packetData);
+        default -> IO.println("/!\\ Unsupported ethernet type for parsing: " + ethernetType);
+    }
+}
+
+/**
+ * Parses the ARP packet data with the help of the packetData buffer with it cursor positioned at the start of the packet (after ethernet type)
+ * @param packetData
+ */
+void parsePacketARP(ByteBuffer packetData) {
+    packetData.order(ByteOrder.BIG_ENDIAN);
+    packetData.position(packetData.position() + 6);
+    var opcode = packetData.getShort() & 0xFF;
+    var operation = opcode == 1 ? "Request" : "Reply";
+    var senderMac = new byte[6];
+    packetData.get(senderMac);
+    var senderIp = new byte[4];
+    packetData.get(senderIp);
+    var targetMac = new byte[6];
+    packetData.get(targetMac);
+    var targetIp = new byte[4];
+    packetData.get(targetIp);
+    String template = """
+        ARP data: [ operation: %s | sender MAC: %s | sender IP: %s | target MAC: %s | target IP: %s ]
+    """;
+
+    System.out.println(String.format(template, operation, formatMacAddress(senderMac), formatIpAddress(senderIp), formatMacAddress(targetMac), formatIpAddress(targetIp)));
+}
+
+/**
+ * Parses the IPV4 packet data with the help of the packetData buffer
+ * @param packetData
+ */
+void parsePacketIPV4(ByteBuffer packetData) {
+    packetData.order(ByteOrder.BIG_ENDIAN);
+
+    // first byte : version (4 bits) et ihl (4 bits)
+    byte versionAndIHL = packetData.get();
+    var ihl = (versionAndIHL & 0x0F); // keep 4 of right hand byte
+    int headerLengthBytes = ihl * 4;
+
+    // skip the type of service (1 byte)
+    packetData.get();
+
+    var totalLength = packetData.getShort() & 0xFFFF;
+
+    //skip the identification (2 bytes)
+    packetData.getShort();
+
+    //flags (3 bits) and fragment offset (13 bits)
+    var flagsAndOffset = packetData.getShort();
+    var flags = (flagsAndOffset >>> 13) & 0x07;
+    var fragmentOffset = flagsAndOffset & 0x1FFF;
+
+    //ttl (8 bits) and protocol (8 bits)
+    var ttl = packetData.get() & 0xFF;
+    var protocol = packetData.get() & 0xFF;
+    var ipv4Protocol = getPcapIPV4Protocol(protocol);
+
+    //skip checksum (2 bytes)
+    packetData.getShort();
+
+    //IP address src and dest
+    var srcIp = new byte[4];
+    var dstIp = new byte[4];
+    packetData.get(srcIp);
+    packetData.get(dstIp);
+
+    //options managed by the IHL field (20 bytes max)
+    if (headerLengthBytes > 20) {
+        int optionsLength = headerLengthBytes - 20;
+        packetData.position(packetData.position() + optionsLength);
+    }
+
+    String template = """
+        IPv4 data [
+            src IP: %s | dest IP: %s
+            TTL: %d | protocol: %s | total length: %d
+            IHL: %d bytes | flags: %d | fragment offset: %d
+        ]
+    """;
+
+    IO.println(String.format(template,
+            formatIpAddress(srcIp), formatIpAddress(dstIp),
+            ttl, ipv4Protocol, totalLength,
+            headerLengthBytes, flags, fragmentOffset));
+
+    //packetData.position() is properly positioned at the start of the packet data
+    if (PcapIPV4Protocol.TCP == ipv4Protocol) {
+        //parse TCP packet data
+    } else if (PcapIPV4Protocol.UDP == ipv4Protocol) {
+        //parse UDP packet data
+    } else if (PcapIPV4Protocol.ICMP == ipv4Protocol) {
+        //parse ICMP packet data
+    }
+}
+
+String formatIpAddress(byte[] ipAddress) {
+    return String.format("%d.%d.%d.%d", ipAddress[0] & 0xFF, ipAddress[1] & 0xFF, ipAddress[2] & 0xFF, ipAddress[3] & 0xFF);
+}
+String formatMacAddress(byte[] macAddress) {
+    return String.format("%02X:%02X:%02X:%02X:%02X:%02X", macAddress[0], macAddress[1], macAddress[2], macAddress[3], macAddress[4], macAddress[5]);
 }
 
 void readPackets(PcapFileFormat pcapFileFormat, ByteBuffer packetDataBuffer) {
@@ -109,12 +241,14 @@ void readPackets(PcapFileFormat pcapFileFormat, ByteBuffer packetDataBuffer) {
         packetData.order(packetDataBuffer.order());
         packetDataBuffer.position(packetDataBuffer.position() + capturedLength);
         readPacket(packetCount, timestampSeconds, timestampMicroSeconds, capturedLength, packetLength, packetData);
-        packetCount ++;
+        packetCount++;
     }
     IO.println("Number of packets read: " + packetCount);
 }
+
 /**
  * Extracts the pcap file format from the magic number
+ *
  * @param magicNumberBuffer byte buffer containing the magic number on 4 bytes
  * @return the pcap file format or null if the magic number is not recognized
  */
@@ -143,7 +277,38 @@ PcapFileFormat getPcapFileFormat(ByteBuffer magicNumberBuffer) {
 }
 
 /**
+ * Returns the ethernet type from the extracted packet data
+ * @param ethernetType
+ * @return the ethernet type or null if the ethernet type is not recognized
+ */
+PcapEthernetType getPcapEthernetType(int ethernetType) {
+    if (ethernetType == 0x0800) {
+        return PcapEthernetType.IPV4;
+    }
+    if (ethernetType == 0x86DD) {
+        return PcapEthernetType.IPV6;
+    }
+    if (ethernetType == 0x0806) {
+        return PcapEthernetType.ARP;
+    }
+    return null;
+}
+
+PcapIPV4Protocol getPcapIPV4Protocol(int protocolNum) {
+    if (protocolNum == 1) {
+        return PcapIPV4Protocol.ICMP;
+    }
+    if (protocolNum == 6) {
+        return PcapIPV4Protocol.TCP;
+    }
+    if (protocolNum == 17) {
+        return PcapIPV4Protocol.UDP;
+    }
+    return null;
+}
+/**
  * Extracts the major and minor versions from the pcap header
+ *
  * @param pcapFileFormat the pcap file format extracted from the magic number
  * @param versionsBuffer byte buffer containing the versions on 4 bytes
  * @return the major and minor versions as record
@@ -169,6 +334,7 @@ PcapVersion getPcapVersions(PcapFileFormat pcapFileFormat, ByteBuffer versionsBu
 /**
  * Returns the snap length from the pcap header
  * the snap length is the maximum number of bytes captured in each packet
+ *
  * @param pcapFileFormat
  * @param snapLenBuffer
  * @return the snap length
@@ -191,6 +357,7 @@ int getSnapLen(PcapFileFormat pcapFileFormat, ByteBuffer snapLenBuffer) {
 /**
  * Returns the linktype and additional information from the pcap header
  * the linktype is the type of the network layer protocol
+ *
  * @param pcapFileFormat
  * @param linkTypeAdditionalInfoBuffer
  * @return the linktype and additional information as record
