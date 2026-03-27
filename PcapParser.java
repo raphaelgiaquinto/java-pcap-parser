@@ -23,6 +23,9 @@ enum PcapIPV4Protocol {
     TCP, UDP, ICMP,
 }
 
+enum PcapIPV6Protocol {
+    TCP, UDP, ICMPv6,
+}
 record PcapVersion(int majorVersion, int minorVersion) {}
 
 record LinkTypeAndAdditionalInfo(int fcsLen, int r, int p, int reserved3, int linkType) {}
@@ -77,7 +80,7 @@ void main(String[] args) {
             IO.println("Error: link type must be 1 (Ethernet)");
             System.exit(1);
         }
-        //all of the next bytes are the packet data
+        //all the next bytes packets data to parse
         var packetDataBuffer = bytes.slice(24, bytes.remaining() - 24);
         IO.println("Packet data:" + packetDataBuffer.remaining());
         readPackets(pcapFileFormat, packetDataBuffer);
@@ -91,11 +94,11 @@ void readPacket(int count, int timestampSeconds, int timestampMicroSeconds, int 
     var template = """
     Packet [%d]
     ________________________________________________________
-        Timestamp seconds: %d
+        Timestamp seconds:      %d
         Timestamp microseconds: %d
-        Captured length: %d
-        Packet length: %d
-        Ethernet: [ dest MAC: %s | src MAC: %s | type: %s ]
+        Captured length:        %d
+        Packet length:          %d bytes
+        Ethernet:               [ dest MAC: %s | src MAC: %s | type: %s ]
     """;
     var destMAC = new byte[6];
     var srcMAC = new byte[6];
@@ -119,7 +122,8 @@ void readPacket(int count, int timestampSeconds, int timestampMicroSeconds, int 
     switch (ethernetType) {
         case IPV4 -> parsePacketIPV4(packetData);
         case ARP -> parsePacketARP(packetData);
-        default -> IO.println("/!\\ Unsupported ethernet type for parsing: " + ethernetType);
+        case IPV6 -> parsePacketIPV6(packetData);
+        default -> IO.println("Error: unknown ethernet type: " + ethernetType);
     }
 }
 
@@ -154,7 +158,7 @@ void parsePacketARP(ByteBuffer packetData) {
 void parsePacketIPV4(ByteBuffer packetData) {
     packetData.order(ByteOrder.BIG_ENDIAN);
 
-    // first byte : version (4 bits) et ihl (4 bits)
+    // first byte : version (4 bits) and ihl (4 bits)
     byte versionAndIHL = packetData.get();
     var ihl = (versionAndIHL & 0x0F); // keep 4 of right hand byte
     int headerLengthBytes = ihl * 4;
@@ -195,8 +199,8 @@ void parsePacketIPV4(ByteBuffer packetData) {
     String template = """
         IPv4 data [
             src IP: %s | dest IP: %s
-            TTL: %d | protocol: %s | total length: %d
-            IHL: %d bytes | flags: %d | fragment offset: %d
+            TTL:    %d | protocol:    %s | total length: %d
+            IHL:    %d bytes | flags: %d | fragment offset: %d
         ]
     """;
 
@@ -205,19 +209,156 @@ void parsePacketIPV4(ByteBuffer packetData) {
             ttl, ipv4Protocol, totalLength,
             headerLengthBytes, flags, fragmentOffset));
 
-    //packetData.position() is properly positioned at the start of the packet data
-    if (PcapIPV4Protocol.TCP == ipv4Protocol) {
-        //parse TCP packet data
-    } else if (PcapIPV4Protocol.UDP == ipv4Protocol) {
-        //parse UDP packet data
-    } else if (PcapIPV4Protocol.ICMP == ipv4Protocol) {
-        //parse ICMP packet data
+    /*
+        packetData.position() is properly positioned at the start of the packet data
+        now we can parse the packet data based on the protocol
+    */
+    switch (ipv4Protocol) {
+        case TCP ->  parseTCPPacket(packetData);
+        case UDP -> parseUDPPacket(packetData);
+        case ICMP -> {
+            return;
+        }
     }
 }
 
+/**
+ * Parses the IPv6 packet data using the packetData buffer
+ * @param packetData
+ */
+void parsePacketIPV6(ByteBuffer packetData) {
+    packetData.order(ByteOrder.BIG_ENDIAN);
+
+    //skip 4 bytes (version, traffic class, flow label)
+    packetData.getInt();
+
+    //payload length (2 bytes)
+    int payloadLength = packetData.getShort() & 0xFFFF;
+
+    //next header (1 byte)
+    int nextHeader = packetData.get() & 0xFF;
+
+    //hop limit (1 byte)
+    int hopLimit = packetData.get() & 0xFF;
+
+    //IP src and dest (16 bytes each)
+    byte[] srcIpv6 = new byte[16];
+    byte[] dstIpv6 = new byte[16];
+    packetData.get(srcIpv6);
+    packetData.get(dstIpv6);
+    var protocol = getPcapIPV6Protocol(nextHeader);
+
+
+    var template = """
+        IPv6 data [
+            IP src:                %s |    IP dest: %s
+            next header:           %s      (%d)
+            hop limit:             %d
+            payload length:        %d bytes
+        ]
+    """;
+
+    IO.println(String.format(template,
+            formatIpv6Address(srcIpv6),
+            formatIpv6Address(dstIpv6),
+            protocol, nextHeader,
+            hopLimit,
+            payloadLength));
+}
+
+/**
+ * Parse TCP packet data (it is a bit more complex than the IPV4 packet, because it has a header with 20 bytes and a payload with variable length)
+ * It is REALLY MORE challenging than UDP to parse :(
+ * @param packetData
+ */
+void parseTCPPacket(ByteBuffer packetData) {
+    packetData.order(ByteOrder.BIG_ENDIAN);
+    var startPosition = packetData.position();
+
+    //ports (2 bytes each)
+    var srcPort = packetData.getShort() & 0xFFFF;
+    var dstPort = packetData.getShort() & 0xFFFF;
+
+    //seq and ack (32 bits each)
+    var seq = packetData.getInt() & 0xFFFFFFFFL;
+    var ack = packetData.getInt() & 0xFFFFFFFFL;
+
+    //data offset length of the header (4 bits)
+    var offsetByte = packetData.get();
+    var dataOffset = (offsetByte >> 4) & 0x0F;
+    var headerLengthBytes = dataOffset * 4;
+
+    // flags (1 byte)
+    var flagsByte = packetData.get();
+    var urg = (flagsByte & 0x20) != 0;
+    var ackF = (flagsByte & 0x10) != 0;
+    var psh = (flagsByte & 0x08) != 0;
+    var rst = (flagsByte & 0x04) != 0;
+    var syn = (flagsByte & 0x02) != 0;
+    var fin = (flagsByte & 0x01) != 0;
+
+    //window
+    var window = packetData.getShort() & 0xFFFF;
+
+    //skip options, go to the end of the TCP header
+    packetData.position(startPosition + headerLengthBytes);
+
+    var flags = String.format("SYN: %b | ACK :%b | FIN :%b | RST :%b | PSH :%b | URG: %b", syn, ackF, fin, rst, psh, urg);
+
+    IO.println("""
+        TCP data [
+            ports:    %d -> %d
+            seq:      %d
+            ack:      %d
+            Flags:    %s
+            window:   %d | header length: %d bytes
+        ]
+    """.formatted(srcPort, dstPort, seq, ack, flags, window, headerLengthBytes));
+
+    //now, this is the payload data
+    if (packetData.remaining() > 0) {
+
+    }
+}
+
+/**
+ * Parses the UDP packet data with the help of the packetData buffer
+ * EASY TO PARSE :D
+ * @param packetData
+ */
+void parseUDPPacket(ByteBuffer packetData) {
+    packetData.order(ByteOrder.BIG_ENDIAN);
+
+    //ports (2 bytes each)
+    var srcPort = packetData.getShort() & 0xFFFF;
+    var dstPort = packetData.getShort() & 0xFFFF;
+
+    //length (2 bytes)
+    var length = packetData.getShort() & 0xFFFF;
+
+    //skip checksum (2 bytes)
+    packetData.getShort();
+
+    IO.println(String.format("""
+        UDP data [
+            ports:  %d -> %d
+            length: %d bytes
+        ]
+    """, srcPort, dstPort, length));
+
+    //now this is the payload data
+    if (packetData.remaining() > 0) {
+
+    }
+}
 String formatIpAddress(byte[] ipAddress) {
     return String.format("%d.%d.%d.%d", ipAddress[0] & 0xFF, ipAddress[1] & 0xFF, ipAddress[2] & 0xFF, ipAddress[3] & 0xFF);
 }
+
+String formatIpv6Address(byte[] ipv6Address) {
+    return String.format("%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X", ipv6Address[0], ipv6Address[1], ipv6Address[2], ipv6Address[3], ipv6Address[4], ipv6Address[5], ipv6Address[6], ipv6Address[7]);
+}
+
 String formatMacAddress(byte[] macAddress) {
     return String.format("%02X:%02X:%02X:%02X:%02X:%02X", macAddress[0], macAddress[1], macAddress[2], macAddress[3], macAddress[4], macAddress[5]);
 }
@@ -294,17 +435,22 @@ PcapEthernetType getPcapEthernetType(int ethernetType) {
     return null;
 }
 
-PcapIPV4Protocol getPcapIPV4Protocol(int protocolNum) {
-    if (protocolNum == 1) {
-        return PcapIPV4Protocol.ICMP;
-    }
-    if (protocolNum == 6) {
-        return PcapIPV4Protocol.TCP;
-    }
-    if (protocolNum == 17) {
-        return PcapIPV4Protocol.UDP;
-    }
-    return null;
+PcapIPV4Protocol getPcapIPV4Protocol(int protocol) {
+    return switch (protocol) {
+        case 1 -> PcapIPV4Protocol.ICMP;
+        case 6 -> PcapIPV4Protocol.TCP;
+        case 17 -> PcapIPV4Protocol.UDP;
+        default -> null;
+    };
+}
+
+PcapIPV6Protocol getPcapIPV6Protocol(int protocol) {
+    return switch (protocol) {
+        case 6 -> PcapIPV6Protocol.TCP;
+        case 17 -> PcapIPV6Protocol.UDP;
+        case 58 -> PcapIPV6Protocol.ICMPv6;
+        default -> null;
+    };
 }
 /**
  * Extracts the major and minor versions from the pcap header
