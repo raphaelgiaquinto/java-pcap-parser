@@ -2,8 +2,6 @@
 
 ### Description
 
-**( This is a work in progress project )**
-
 Java Pcap Parser used to parse pcap files generated from applications like **Wireshark**.
 
 It uses pure Java 25 API, no external libraries.
