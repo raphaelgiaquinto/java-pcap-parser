@@ -168,9 +168,9 @@ void parsePacketIPV4(ByteBuffer packetData, List<String> protocolFilters) {
     packetData.order(ByteOrder.BIG_ENDIAN);
 
     // first byte : version (4 bits) and ihl (4 bits)
-    byte versionAndIHL = packetData.get();
+    var versionAndIHL = packetData.get();
     var ihl = (versionAndIHL & 0x0F); // keep 4 of right hand byte
-    int headerLengthBytes = ihl * 4;
+    var headerLengthBytes = ihl * 4;
 
     // skip the type of service (1 byte)
     packetData.get();
@@ -201,7 +201,7 @@ void parsePacketIPV4(ByteBuffer packetData, List<String> protocolFilters) {
 
     //options managed by the IHL field (20 bytes max)
     if (headerLengthBytes > 20) {
-        int optionsLength = headerLengthBytes - 20;
+        var optionsLength = headerLengthBytes - 20;
         packetData.position(packetData.position() + optionsLength);
     }
 
@@ -235,17 +235,17 @@ void parsePacketIPV6(ByteBuffer packetData, List<String> protocolFilters) {
     packetData.getInt();
 
     //payload length (2 bytes)
-    int payloadLength = packetData.getShort() & 0xFFFF;
+    var payloadLength = packetData.getShort() & 0xFFFF;
 
     //next header (1 byte)
-    int nextHeader = packetData.get() & 0xFF;
+    var nextHeader = packetData.get() & 0xFF;
 
     //hop limit (1 byte)
-    int hopLimit = packetData.get() & 0xFF;
+    var hopLimit = packetData.get() & 0xFF;
 
     //IP src and dest (16 bytes each)
-    byte[] srcIpv6 = new byte[16];
-    byte[] dstIpv6 = new byte[16];
+    var srcIpv6 = new byte[16];
+    var dstIpv6 = new byte[16];
     packetData.get(srcIpv6);
     packetData.get(dstIpv6);
     var protocol = getPcapIPV6Protocol(nextHeader);
@@ -440,7 +440,7 @@ void parseICMPPacketV6(ByteBuffer packetData) {
  * @param packetData
  */
 void parseDNSPacket(ByteBuffer packetData) {
-    int dnsOffset = packetData.position();
+    var dnsOffset = packetData.position();
     packetData.order(ByteOrder.BIG_ENDIAN);
     //header on next 12 bytes
     var id = packetData.getShort() & 0xFFFF;
@@ -496,10 +496,10 @@ void parseMinimalQUICPacket(ByteBuffer packetData) {
     if (packetData.remaining() < 1) return;
 
     packetData.order(ByteOrder.BIG_ENDIAN);
-    int firstByte = packetData.get() & 0xFF;
+    var firstByte = packetData.get() & 0xFF;
 
     //bit 7 (0x80) check if the packet has a long header
-    boolean isLongHeader = (firstByte & 0x80) != 0;
+    var isLongHeader = (firstByte & 0x80) != 0;
 
     if (isLongHeader) {
         if (packetData.remaining() < 4)
