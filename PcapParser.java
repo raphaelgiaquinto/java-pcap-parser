@@ -38,13 +38,26 @@ class PcapParserException extends RuntimeException {
 
 void main(String[] args) {
 
-    if (args.length != 1) {
-        IO.println("Usage: java PcapParser <.pcap file>");
+    if (args.length < 1) {
+        IO.println("Usage: java PcapParser <.pcap file> --proto<tcp|udp|dns|arp|icmp>");
         System.exit(1);
     }
 
     var pcapFile = args[0];
-
+    List<String> protocolFilters = new ArrayList<>();
+    for (var i = 1; i < args.length; i++) {
+        var arg = args[i];
+        if (arg.startsWith("--proto=")) {
+            var protocol = arg.substring(8).toLowerCase();
+            if (Set.of("tcp", "udp", "dns", "arp", "icmp").contains(protocol)) {
+                protocolFilters.add(protocol);
+                IO.println("Protocol filter set to: " + protocol);
+            } else {
+                IO.println("Error: unknown protocol filter: " + protocol);
+                System.exit(1);
+            }
+        }
+    }
     if (!pcapFile.endsWith(".pcap")) {
         IO.println("Error: PCAP file must have a .pcap extension");
         System.exit(1);
@@ -83,23 +96,15 @@ void main(String[] args) {
         //all the next bytes packets data to parse
         var packetDataBuffer = bytes.slice(24, bytes.remaining() - 24);
         IO.println("Packet data:" + packetDataBuffer.remaining());
-        readPackets(pcapFileFormat, packetDataBuffer);
+        readPackets(pcapFileFormat, packetDataBuffer, protocolFilters);
     } catch (IOException e) {
         IO.println("Error reading PCAP file: " + e.getMessage());
         System.exit(1);
     }
 }
 
-void readPacket(int count, int timestampSeconds, int timestampMicroSeconds, int capturedLength, int packetLength, ByteBuffer packetData) {
-    var template = """
-    Packet [%d]
-    ________________________________________________________
-        Timestamp seconds:      %d
-        Timestamp microseconds: %d
-        Captured length:        %d
-        Packet length:          %d bytes
-        Ethernet:               [ dest MAC: %s | src MAC: %s | type: %s ]
-    """;
+void readPacket(int count, int timestampSeconds, int timestampMicroSeconds, int capturedLength, int packetLength, ByteBuffer packetData, List<String> protocolFilters) {
+    var template = "Packet [%d] | timestamp s: %d | timestamp µs: %d | captured length: %d | packet length: %d bytes | ethernet : [ dest MAC: %s | src MAC: %s | type: %s ]";
     var destMAC = new byte[6];
     var srcMAC = new byte[6];
     packetData.get(destMAC);
@@ -120,18 +125,23 @@ void readPacket(int count, int timestampSeconds, int timestampMicroSeconds, int 
             )
     );
     switch (ethernetType) {
-        case IPV4 -> parsePacketIPV4(packetData);
-        case ARP -> parsePacketARP(packetData);
-        case IPV6 -> parsePacketIPV6(packetData);
+        case IPV4 -> parsePacketIPV4(packetData, protocolFilters);
+        case ARP -> parsePacketARP(packetData, protocolFilters);
+        case IPV6 -> parsePacketIPV6(packetData, protocolFilters);
         default -> IO.println("Error: unknown ethernet type: " + ethernetType);
     }
+    IO.println(String.format("End of packet %d", count));
 }
 
 /**
  * Parses the ARP packet data with the help of the packetData buffer with it cursor positioned at the start of the packet (after ethernet type)
  * @param packetData
+ * @param protocolFilters
  */
-void parsePacketARP(ByteBuffer packetData) {
+void parsePacketARP(ByteBuffer packetData, List<String> protocolFilters) {
+    if (!protocolFilters.contains("arp") && !protocolFilters.isEmpty()) {
+        return;
+    }
     packetData.order(ByteOrder.BIG_ENDIAN);
     packetData.position(packetData.position() + 6);
     var opcode = packetData.getShort() & 0xFF;
@@ -144,18 +154,17 @@ void parsePacketARP(ByteBuffer packetData) {
     packetData.get(targetMac);
     var targetIp = new byte[4];
     packetData.get(targetIp);
-    String template = """
-        ARP data: [ operation: %s | sender MAC: %s | sender IP: %s | target MAC: %s | target IP: %s ]
-    """;
+    String template = "ARP data: [ operation: %s | sender MAC: %s | sender IP: %s | target MAC: %s | target IP: %s ]";
 
-    System.out.println(String.format(template, operation, formatMacAddress(senderMac), formatIpAddress(senderIp), formatMacAddress(targetMac), formatIpAddress(targetIp)));
+    IO.println(String.format(template, operation, formatMacAddress(senderMac), formatIpAddress(senderIp), formatMacAddress(targetMac), formatIpAddress(targetIp)));
 }
 
 /**
  * Parses the IPV4 packet data with the help of the packetData buffer
  * @param packetData
+ * @param protocolFilters
  */
-void parsePacketIPV4(ByteBuffer packetData) {
+void parsePacketIPV4(ByteBuffer packetData, List<String> protocolFilters) {
     packetData.order(ByteOrder.BIG_ENDIAN);
 
     // first byte : version (4 bits) and ihl (4 bits)
@@ -196,13 +205,7 @@ void parsePacketIPV4(ByteBuffer packetData) {
         packetData.position(packetData.position() + optionsLength);
     }
 
-    String template = """
-        IPv4 data [
-            src IP: %s | dest IP: %s
-            TTL:    %d | protocol:    %s | total length: %d
-            IHL:    %d bytes | flags: %d | fragment offset: %d
-        ]
-    """;
+    String template = "IPv4 data [ src IP: %s | dest IP: %s | TTL: %d | protocol: %s | total length: %d | IHL: %d bytes | flags: %d | fragment offset: %d ]";
 
     IO.println(String.format(template,
             formatIpAddress(srcIp), formatIpAddress(dstIp),
@@ -214,19 +217,18 @@ void parsePacketIPV4(ByteBuffer packetData) {
         now we can parse the packet data based on the protocol
     */
     switch (ipv4Protocol) {
-        case TCP ->  parseTCPPacket(packetData);
-        case UDP -> parseUDPPacket(packetData);
-        case ICMP -> {
-            return;
-        }
+        case TCP ->  parseTCPPacket(packetData, protocolFilters);
+        case UDP -> parseUDPPacket(packetData, protocolFilters);
+        case ICMP -> parseICMPPacketV4(packetData, protocolFilters);
     }
 }
 
 /**
  * Parses the IPv6 packet data using the packetData buffer
  * @param packetData
+ * @param protocolFilters
  */
-void parsePacketIPV6(ByteBuffer packetData) {
+void parsePacketIPV6(ByteBuffer packetData, List<String> protocolFilters) {
     packetData.order(ByteOrder.BIG_ENDIAN);
 
     //skip 4 bytes (version, traffic class, flow label)
@@ -249,14 +251,7 @@ void parsePacketIPV6(ByteBuffer packetData) {
     var protocol = getPcapIPV6Protocol(nextHeader);
 
 
-    var template = """
-        IPv6 data [
-            IP src:                %s |    IP dest: %s
-            next header:           %s      (%d)
-            hop limit:             %d
-            payload length:        %d bytes
-        ]
-    """;
+    var template = "IPv6 data [ IP src: %s | IP dest: %s | next header: %s (%d) | hop limit: %d | payload length: %d bytes ]";
 
     IO.println(String.format(template,
             formatIpv6Address(srcIpv6),
@@ -264,14 +259,22 @@ void parsePacketIPV6(ByteBuffer packetData) {
             protocol, nextHeader,
             hopLimit,
             payloadLength));
+
+    if (protocol == PcapIPV6Protocol.ICMPv6 && (protocolFilters.contains("icmp") || protocolFilters.isEmpty())) {
+        parseICMPPacketV6(packetData);
+    }
 }
 
 /**
  * Parse TCP packet data (it is a bit more complex than the IPV4 packet, because it has a header with 20 bytes and a payload with variable length)
  * It is REALLY MORE challenging than UDP to parse :(
  * @param packetData
+ * @param protocolFilters
  */
-void parseTCPPacket(ByteBuffer packetData) {
+void parseTCPPacket(ByteBuffer packetData, List<String> protocolFilters) {
+    if (!protocolFilters.contains("tcp") && !protocolFilters.isEmpty()) {
+        return;
+    }
     packetData.order(ByteOrder.BIG_ENDIAN);
     var startPosition = packetData.position();
 
@@ -305,15 +308,7 @@ void parseTCPPacket(ByteBuffer packetData) {
 
     var flags = String.format("SYN: %b | ACK :%b | FIN :%b | RST :%b | PSH :%b | URG: %b", syn, ackF, fin, rst, psh, urg);
 
-    IO.println("""
-        TCP data [
-            ports:    %d -> %d
-            seq:      %d
-            ack:      %d
-            Flags:    %s
-            window:   %d | header length: %d bytes
-        ]
-    """.formatted(srcPort, dstPort, seq, ack, flags, window, headerLengthBytes));
+    IO.println("TCP data [ ports: %d -> %d | seq: %d | ack: %d | flags: %s | window: %d | header length: %d bytes ]".formatted(srcPort, dstPort, seq, ack, flags, window, headerLengthBytes));
 
     //now, this is the payload data
     if (packetData.remaining() > 0) {
@@ -325,8 +320,12 @@ void parseTCPPacket(ByteBuffer packetData) {
  * Parses the UDP packet data with the help of the packetData buffer
  * EASY TO PARSE :D
  * @param packetData
+ * @param protocolFilters
  */
-void parseUDPPacket(ByteBuffer packetData) {
+void parseUDPPacket(ByteBuffer packetData, List<String> protocolFilters) {
+    if (!protocolFilters.contains("udp") && !protocolFilters.isEmpty()) {
+        return;
+    }
     packetData.order(ByteOrder.BIG_ENDIAN);
 
     //ports (2 bytes each)
@@ -339,18 +338,230 @@ void parseUDPPacket(ByteBuffer packetData) {
     //skip checksum (2 bytes)
     packetData.getShort();
 
-    IO.println(String.format("""
-        UDP data [
-            ports:  %d -> %d
-            length: %d bytes
-        ]
-    """, srcPort, dstPort, length));
+    IO.println(String.format("UDP data [ ports:  %d -> %d | length: %d bytes ]", srcPort, dstPort, length));
+
+    if (srcPort == 53 || dstPort == 53) {
+        parseDNSPacket(packetData);
+    }
+
+    if (srcPort == 443 || dstPort == 443) {
+        parseMinimalQUICPacket(packetData);
+    }
+}
+
+/**
+ * Parses the ICMPv4 packet data from ipv4 packet data buffer
+ * @param packetData
+ * @param protocolFilters
+ */
+void parseICMPPacketV4(ByteBuffer packetData, List<String> protocolFilters) {
+    if (!protocolFilters.contains("icmp") && !protocolFilters.isEmpty()) {
+        return;
+    }
+    packetData.order(ByteOrder.BIG_ENDIAN);
+
+    // extract the first bytes for type and code
+    var type = packetData.get() & 0xFF;
+    var code = packetData.get() & 0xFF;
+    //get checksum on 2 next bytes
+    var checksum = packetData.getShort() & 0xFFFF;
+
+    //4 next bytes are header data
+    var header = packetData.getInt();
+
+    //type translation
+    var typeDescription = switch (type) {
+        case 0  -> "pong !";
+        case 3  -> "destination unreachable";
+        case 5  -> "redirect";
+        case 8  -> "ping ! ";
+        case 11 -> "time exceeded (TTL expired)";
+        default -> "unknown type (" + type + ")";
+    };
+
+    //code translation
+    var codeDescription = "";
+    if (type == 3) {
+        codeDescription = switch (code) {
+            case 0 -> "net unreachable";
+            case 1 -> "host unreachable";
+            case 3 -> "port unreachable";
+            default -> "code " + code;
+        };
+    }
+
+    IO.println(String.format("ICMPv4 [ type: %s | code: %s | checksum: 0x%04X | header: 0x%08X ]", typeDescription, codeDescription, checksum, header));
 
     //now this is the payload data
     if (packetData.remaining() > 0) {
 
     }
 }
+
+/**
+ * Parses the ICMPv6 packet data from ipv6 packet data buffer
+ * It is not only used to do ping/pong, but also to discover neighbors like ARP protocol
+ * @param packetData
+ */
+void parseICMPPacketV6(ByteBuffer packetData) {
+    packetData.order(ByteOrder.BIG_ENDIAN);
+    var type = packetData.get() & 0xFF;
+    var code = packetData.get() & 0xFF;
+    var checksum = packetData.getShort() & 0xFFFF;
+
+    //4 next bytes are header data
+    var restOfHeader = packetData.getInt();
+
+    var typeDescription = switch (type) {
+        case 1   -> "destination unreachable";
+        case 2   -> "packet too big";
+        case 3   -> "time exceeded (TTL expired)";
+        case 4   -> "parameter problem";
+        case 128 -> "ping !";
+        case 129 -> "pong !";
+        //ARP stuff like Neighbor Solicitation
+        case 133 -> "router solicitation";
+        case 134 -> "router advertisement";
+        case 135 -> "neighbor solicitation";
+        case 136 -> "neighbor advertisement";
+        default  -> "unknown type (" + type + ")";
+    };
+
+    IO.println(String.format("ICMPv6 [ type: %s | code: %d | checksum: 0x%04X | header: 0x%08X ]", typeDescription, code, checksum, restOfHeader));
+
+    //now this is the payload data
+    if (packetData.remaining() > 0) {
+
+    }
+}
+
+/**
+ * Parse DNS packet data
+ * @param packetData
+ */
+void parseDNSPacket(ByteBuffer packetData) {
+    int dnsOffset = packetData.position();
+    packetData.order(ByteOrder.BIG_ENDIAN);
+    //header on next 12 bytes
+    var id = packetData.getShort() & 0xFFFF;
+    var flags = packetData.getShort() & 0xFFFF;
+    var qd = packetData.getShort() & 0xFFFF;
+    var an = packetData.getShort() & 0xFFFF;
+    var ns = packetData.getShort() & 0xFFFF;
+    var ar = packetData.getShort() & 0xFFFF;
+
+    IO.println(String.format("DNS [ id: 0x%04X | q:%d a:%d auth:%d add:%d | flags:0x%04X ]", id, qd, an, ns, ar, flags));
+
+    //queries
+    for (int i = 0; i < qd; i++) {
+        var dnsName = extractDNSName(packetData, dnsOffset);
+        var qType = packetData.getShort() & 0xFFFF;
+        var qClass = packetData.getShort() & 0xFFFF;
+        IO.print(String.format("-> query target: %s (Type: %d) | qClass: %d", dnsName, qType, qClass));
+    }
+
+    //answers
+    for (int i = 0; i < an; i++) {
+        var dnsName = extractDNSName(packetData, dnsOffset);
+        var aType = packetData.getShort() & 0xFFFF;
+        var aClass = packetData.getShort() & 0xFFFF;
+        var ttl = packetData.getInt() & 0xFFFFFFFFL;
+        var rdLength = packetData.getShort() & 0xFFFF;
+
+        if (aType == 1 && rdLength == 4) { //type A
+            var ip = new byte[4];
+            packetData.get(ip);
+            IO.println(String.format("-> answer: %s -> A : [%s] | aClass: %d | ttl: %d | rdLength: %d", dnsName, formatIpAddress(ip), aClass, ttl, rdLength));
+        } else if (aType == 28 && rdLength == 16) {// type AAAA
+            var ip6 = new byte[16];
+            packetData.get(ip6);
+            IO.println(String.format("-> answer: %s -> AAAA : [%s] | aClass: %d | ttl: %d | rdLength: %d", dnsName, formatIpv6Address(ip6), aClass, ttl, rdLength));
+        } else if (aType == 5) {// CNAME
+            var cname = extractDNSName(packetData, dnsOffset);
+            IO.println(String.format("-> answer: %s -> CNAME : [%s] | aClass: %d | ttl: %d | rdLength: %d", dnsName, cname, aClass, ttl, rdLength));
+        } else {
+            //other types, skip the data
+            packetData.position(packetData.position() + rdLength);
+            IO.println(String.format("-> answer: %s -> ? : [skip %d bytes]", dnsName, rdLength));
+        }
+    }
+}
+
+/**
+ * Try to parse a packet under QUIC protocol for HTTP/3
+ * This is the best effort parser, it may not handle all cases correctly.
+ * @param packetData
+ */
+void parseMinimalQUICPacket(ByteBuffer packetData) {
+    if (packetData.remaining() < 1) return;
+
+    packetData.order(ByteOrder.BIG_ENDIAN);
+    int firstByte = packetData.get() & 0xFF;
+
+    //bit 7 (0x80) check if the packet has a long header
+    boolean isLongHeader = (firstByte & 0x80) != 0;
+
+    if (isLongHeader) {
+        if (packetData.remaining() < 4)
+            return;
+
+        //version on 4 bytes
+        var version = packetData.getInt();
+        //dest connection id (DCID)
+        var dcidLen = packetData.get() & 0xFF;
+        var dcid = new byte[dcidLen];
+
+        if (packetData.remaining() >= dcidLen)
+            packetData.get(dcid);
+
+        //src connection id (SCID)
+        var scidLen = packetData.get() & 0xFF;
+        var scid = new byte[scidLen];
+
+        if (packetData.remaining() >= scidLen)
+            packetData.get(scid);
+
+        IO.println(String.format("QUIC (minimal) [ type: long header (0x%02X) | version: 0x%08X | DCID: %s (len: %d) | SCID: %s (len: %d) ]", firstByte, version, bytesToHex(dcid), dcidLen, bytesToHex(scid), scidLen));
+
+    } else {
+        //this is a short header
+        IO.println(String.format("QUIC (minimal) [ type: short header (0x%02X) ]", firstByte));
+    }
+}
+/**
+ * Reads a DNS name from the packet data buffer
+ * Handle the compression by jumping to the correct offset
+ * @param buffer
+ * @param dnsOffset
+ * @return
+ */
+String extractDNSName(ByteBuffer buffer, int dnsOffset) {
+    var sb = new StringBuilder();
+    var jumped = false;
+    var savedPos = -1;
+
+    while (true) {
+        var len = buffer.get() & 0xFF; // get length of the name
+        if (len == 0) break; // end of name
+
+        if ((len & 0xC0) == 0xC0) { //this is a pointer to another name
+            var offset = ((len & 0x3F) << 8) | (buffer.get() & 0xFF);
+            if (!jumped) {
+                savedPos = buffer.position(); // save for returning after the jump
+                jumped = true;
+            }
+            buffer.position(dnsOffset + offset);
+        } else {
+            var label = new byte[len];
+            buffer.get(label);
+            sb.append(new String(label)).append(".");
+        }
+    }
+
+    if (jumped) buffer.position(savedPos); //go back to the saved position
+    return sb.toString();
+}
+
 String formatIpAddress(byte[] ipAddress) {
     return String.format("%d.%d.%d.%d", ipAddress[0] & 0xFF, ipAddress[1] & 0xFF, ipAddress[2] & 0xFF, ipAddress[3] & 0xFF);
 }
@@ -363,7 +574,7 @@ String formatMacAddress(byte[] macAddress) {
     return String.format("%02X:%02X:%02X:%02X:%02X:%02X", macAddress[0], macAddress[1], macAddress[2], macAddress[3], macAddress[4], macAddress[5]);
 }
 
-void readPackets(PcapFileFormat pcapFileFormat, ByteBuffer packetDataBuffer) {
+void readPackets(PcapFileFormat pcapFileFormat, ByteBuffer packetDataBuffer, List<String> protocolFilters) {
     switch (pcapFileFormat) {
         case BIG_ENDIAN_MICRO_SECONDS, BIG_ENDIAN_NANO_SECONDS:
             packetDataBuffer.order(ByteOrder.BIG_ENDIAN);
@@ -381,7 +592,7 @@ void readPackets(PcapFileFormat pcapFileFormat, ByteBuffer packetDataBuffer) {
         var packetData = packetDataBuffer.slice(packetDataBuffer.position(), capturedLength);
         packetData.order(packetDataBuffer.order());
         packetDataBuffer.position(packetDataBuffer.position() + capturedLength);
-        readPacket(packetCount, timestampSeconds, timestampMicroSeconds, capturedLength, packetLength, packetData);
+        readPacket(packetCount, timestampSeconds, timestampMicroSeconds, capturedLength, packetLength, packetData, protocolFilters);
         packetCount++;
     }
     IO.println("Number of packets read: " + packetCount);
@@ -527,4 +738,17 @@ LinkTypeAndAdditionalInfo getLinkTypeAndAdditionalInformation(PcapFileFormat pca
     var reserved3 = (block32bits >>> 16) & 0x03FF;
     var linkType = (block32bits & 0xFFFF);
     return new LinkTypeAndAdditionalInfo(fcsLen, r, p, reserved3, linkType);
+}
+
+/**
+ * Converts a byte array to a hexadecimal string
+ * @param bytes
+ * @return the hexadecimal string
+ */
+String bytesToHex(byte[] bytes) {
+    StringBuilder sb = new StringBuilder();
+    for (byte b : bytes) {
+        sb.append(String.format("%02X ", b & 0xFF));
+    }
+    return sb.toString();
 }
