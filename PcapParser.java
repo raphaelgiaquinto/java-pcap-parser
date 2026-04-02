@@ -751,7 +751,7 @@ void parseDataPayload(ByteBuffer packetData) {
         IO.println("No remaining data to parse as payload");
         return;
     }
-    byte[] payload = new byte[remaining];
+    var payload = new byte[remaining];
     packetData.get(payload);
     IO.println("raw payload data: " + bytesToHex(payload));
     var asciiBuilder = new StringBuilder();
@@ -774,7 +774,7 @@ void parseDataPayload(ByteBuffer packetData) {
  * @return the hexadecimal string
  */
 String bytesToHex(byte[] bytes) {
-    StringBuilder sb = new StringBuilder();
+    var sb = new StringBuilder();
     for (byte b : bytes) {
         sb.append(String.format("%02X ", b & 0xFF));
     }
