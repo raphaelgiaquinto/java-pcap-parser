@@ -40,7 +40,7 @@ java PcapParser <pcap_file_path> --proto<tcp|udp|dns|arp|icmp> (optional)
 To run the parser in a Docker container, execute the following command:
 
 ```bash
-docker docker run --rm -v "$PWD:/data" pcap-parser /data/<your_pcap_file>.pcap --proto<tcp|udp|dns|arp|icmp> (optional)
+docker run --rm -v "$PWD:/data" pcap-parser /data/<your_pcap_file>.pcap --proto<tcp|udp|dns|arp|icmp> (optional)
 ```
 
 ### Protocols supported
