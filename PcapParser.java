@@ -634,16 +634,12 @@ PcapFileFormat getPcapFileFormat(ByteBuffer magicNumberBuffer) {
  * @return the ethernet type or null if the ethernet type is not recognized
  */
 PcapEthernetType getPcapEthernetType(int ethernetType) {
-    if (ethernetType == 0x0800) {
-        return PcapEthernetType.IPV4;
-    }
-    if (ethernetType == 0x86DD) {
-        return PcapEthernetType.IPV6;
-    }
-    if (ethernetType == 0x0806) {
-        return PcapEthernetType.ARP;
-    }
-    return null;
+    return switch (ethernetType) {
+        case 0x0800 -> PcapEthernetType.IPV4;
+        case 0x86DD -> PcapEthernetType.IPV6;
+        case 0x0806 -> PcapEthernetType.ARP;
+        default -> null;
+    };
 }
 
 PcapIPV4Protocol getPcapIPV4Protocol(int protocol) {
