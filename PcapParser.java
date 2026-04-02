@@ -39,7 +39,7 @@ class PcapParserException extends RuntimeException {
 void main(String[] args) {
 
     if (args.length < 1) {
-        IO.println("Usage: java PcapParser <.pcap file> --proto<tcp|udp|dns|arp|icmp>");
+        IO.println("Usage: java PcapParser <.pcap file> --proto<tcp|udp|dns|arp|icmp|quic> (optional)");
         System.exit(1);
     }
 
@@ -49,7 +49,7 @@ void main(String[] args) {
         var arg = args[i];
         if (arg.startsWith("--proto=")) {
             var protocol = arg.substring(8).toLowerCase();
-            if (Set.of("tcp", "udp", "dns", "arp", "icmp").contains(protocol)) {
+            if (Set.of("tcp", "udp", "dns", "arp", "icmp", "quic").contains(protocol)) {
                 protocolFilters.add(protocol);
                 IO.println("Protocol filter set to: " + protocol);
             } else {
@@ -312,7 +312,7 @@ void parseTCPPacket(ByteBuffer packetData, List<String> protocolFilters) {
 
     //now, this is the payload data
     if (packetData.remaining() > 0) {
-
+        parseDataPayload(packetData);
     }
 }
 
@@ -394,7 +394,7 @@ void parseICMPPacketV4(ByteBuffer packetData, List<String> protocolFilters) {
 
     //now this is the payload data
     if (packetData.remaining() > 0) {
-
+        parseDataPayload(packetData);
     }
 }
 
@@ -431,7 +431,7 @@ void parseICMPPacketV6(ByteBuffer packetData) {
 
     //now this is the payload data
     if (packetData.remaining() > 0) {
-
+        parseDataPayload(packetData);
     }
 }
 
@@ -738,6 +738,34 @@ LinkTypeAndAdditionalInfo getLinkTypeAndAdditionalInformation(PcapFileFormat pca
     var reserved3 = (block32bits >>> 16) & 0x03FF;
     var linkType = (block32bits & 0xFFFF);
     return new LinkTypeAndAdditionalInfo(fcsLen, r, p, reserved3, linkType);
+}
+
+/**
+ * Parses the data payload from the packet data buffer
+ * Print data payload as hex string and try to decode it as ascii text
+ * @param packetData
+ */
+void parseDataPayload(ByteBuffer packetData) {
+    var remaining = packetData.remaining();
+    if (remaining <= 0) {
+        IO.println("No remaining data to parse as payload");
+        return;
+    }
+    byte[] payload = new byte[remaining];
+    packetData.get(payload);
+    IO.println("raw payload data: " + bytesToHex(payload));
+    var asciiBuilder = new StringBuilder();
+    for (byte b : payload) {
+        var value = b & 0xFF;
+        if (value >= 32 && value <= 126) {
+            //printable ascii character between 32 and 126 char code
+            asciiBuilder.append((char) value);
+        } else {
+            //non-printable character, print as dot
+            asciiBuilder.append('.');
+        }
+    }
+    IO.println("ascii payload: " + asciiBuilder);
 }
 
 /**
